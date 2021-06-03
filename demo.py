@@ -10,6 +10,7 @@ from modules.load_state import load_state
 from modules.pose import Pose, track_poses
 from val import normalize, pad_width
 from google.colab.patches import cv2_imshow
+import cv2
 
 checkpoint_path = ''
 height_size = ''
@@ -19,21 +20,20 @@ track = 1
 smooth = 1
 
 class ImageReader(object):
-    def __init__(self, file_names):
-        self.file_names = file_names
-        self.max_idx = len(file_names)
+    def __init__(self, file_name):
+        self.file_name = file_name
 
     def __iter__(self):
         self.idx = 0
         return self
 
     def __next__(self):
-        if self.idx == self.max_idx:
-            raise StopIteration
-        img = cv2.imread(self.file_names[self.idx], cv2.IMREAD_COLOR)
+        
+        img = cv2.imread(self.file_name, cv2.IMREAD_COLOR)
         if img.size == 0:
             raise IOError('Image {} cannot be read'.format(self.file_names[self.idx]))
         self.idx = self.idx + 1
+        img = cv2.resize(img, (256,256))
         return img
 
 
@@ -94,7 +94,7 @@ def load_model(checkpoint_path):
 
 def run_demo(net, img_path, height_size, cpu, track, smooth):
 
-    img = ImageReader(img_path)
+    image_provider = ImageReader(img_path)
     net = net.eval()
     if not cpu:
         net = net.cuda()
@@ -105,49 +105,36 @@ def run_demo(net, img_path, height_size, cpu, track, smooth):
     previous_poses = []
     delay = 1
 
-    orig_img = img.copy()
-    heatmaps, pafs, scale, pad = infer_fast(net, img, height_size, stride, upsample_ratio, cpu)
+    for img in image_provider:
 
-    total_keypoints_num = 0
-    all_keypoints_by_type = []
-    for kpt_idx in range(num_keypoints):  # 19th for bg
-        total_keypoints_num += extract_keypoints(heatmaps[:, :, kpt_idx], all_keypoints_by_type, total_keypoints_num)
+        orig_img = img.copy()
+        heatmaps, pafs, scale, pad = infer_fast(net, img, height_size, stride, upsample_ratio, cpu)
 
-    pose_entries, all_keypoints = group_keypoints(all_keypoints_by_type, pafs)
-    for kpt_id in range(all_keypoints.shape[0]):
-        all_keypoints[kpt_id, 0] = (all_keypoints[kpt_id, 0] * stride / upsample_ratio - pad[1]) / scale
-        all_keypoints[kpt_id, 1] = (all_keypoints[kpt_id, 1] * stride / upsample_ratio - pad[0]) / scale
-    current_poses = []
-    for n in range(len(pose_entries)):
-        if len(pose_entries[n]) == 0:
-            continue
-        pose_keypoints = np.ones((num_keypoints, 2), dtype=np.int32) * -1
-        for kpt_id in range(num_keypoints):
-            if pose_entries[n][kpt_id] != -1.0:  # keypoint was found
-                pose_keypoints[kpt_id, 0] = int(all_keypoints[int(pose_entries[n][kpt_id]), 0])
-                pose_keypoints[kpt_id, 1] = int(all_keypoints[int(pose_entries[n][kpt_id]), 1])
-        pose = Pose(pose_keypoints, pose_entries[n][18])
-        current_poses.append(pose)
+        total_keypoints_num = 0
+        all_keypoints_by_type = []
+        for kpt_idx in range(num_keypoints):  # 19th for bg
+            total_keypoints_num += extract_keypoints(heatmaps[:, :, kpt_idx], all_keypoints_by_type, total_keypoints_num)
 
-    if track:
-        track_poses(previous_poses, current_poses, smooth=smooth)
-        previous_poses = current_poses
-    for pose in current_poses:
-        pose.draw(img)
-    
-    for pose in current_poses:
+        pose_entries, all_keypoints = group_keypoints(all_keypoints_by_type, pafs)
+        for kpt_id in range(all_keypoints.shape[0]):
+            all_keypoints[kpt_id, 0] = (all_keypoints[kpt_id, 0] * stride / upsample_ratio - pad[1]) / scale
+            all_keypoints[kpt_id, 1] = (all_keypoints[kpt_id, 1] * stride / upsample_ratio - pad[0]) / scale
+        current_poses = []
+        for n in range(len(pose_entries)):
+            if len(pose_entries[n]) == 0:
+                continue
+            pose_keypoints = np.ones((num_keypoints, 2), dtype=np.int32) * -1
+            for kpt_id in range(num_keypoints):
+                if pose_entries[n][kpt_id] != -1.0:  # keypoint was found
+                    pose_keypoints[kpt_id, 0] = int(all_keypoints[int(pose_entries[n][kpt_id]), 0])
+                    pose_keypoints[kpt_id, 1] = int(all_keypoints[int(pose_entries[n][kpt_id]), 1])
+            pose = Pose(pose_keypoints, pose_entries[n][18])
+            current_poses.append(pose)
+
+        for pose in current_poses:
+            pose.draw(img)
         
-        if track:
-            cv2.putText(img, 'id: {}'.format(pose.id), (pose.bbox[0], pose.bbox[1] - 16),
-                        cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255))
-    cv2_imshow(img)
-    cv2.imwrite("content/1.png", img)
+        cv2_imshow(img)
+        cv2.imwrite("content/1.png", img)
 
-    return pose_keypoints
-
-if __name__ == '__main__':
-    
-        
-    #net = load_model(checkpoint_path)
-    
-    #pose_keypoints = run_demo(net, img_path, height_size, cpu, track, smooth)
+        return pose_keypoints
